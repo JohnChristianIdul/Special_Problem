@@ -43,7 +43,7 @@ def preprocess_data_feature(file_path, target_column='pm2.5', date_columns=['yea
 
     # Ensure column names are unique
     if df.columns.duplicated().any():
-        raise ValueError(f"Duplicate columns found: {df.columns[df.columns.duplicated()].tolist()}")
+        raise ValueError(f"Duplicate columns found: {df.columns[df.columns.duplicated()]}")
 
     # Forward fill missing values, drop any remaining NA values
     df.ffill(inplace=True)
@@ -62,7 +62,7 @@ def preprocess_data_feature(file_path, target_column='pm2.5', date_columns=['yea
     df.drop(columns=date_columns, inplace=True)
 
     # Separate features (excluding target and datetime columns)
-    feature_data = df.drop(columns=[target_column, 'datetime'])
+    feature_data = df.drop(columns=[target_column, 'datetime']) # pm2.5 and datetime will not be included
 
     # Identify numerical and categorical columns
     numerical_cols = feature_data.select_dtypes(include=['int64', 'float64']).columns.tolist()
@@ -88,7 +88,7 @@ def preprocess_data_feature(file_path, target_column='pm2.5', date_columns=['yea
     return {
         'features': transformed_features,
         'feature_names': feature_names,
-        'date': df['datetime'],
+        'date': df['datetime'].squeeze(),
         'target': target_series,
         'scalers': {
             'numeric': preprocessor.named_transformers_['num'],
@@ -107,6 +107,8 @@ def perform_feature_selection(file_path, selection_method, selection_threshold):
     feature_names = data_config['feature_names']
     date_series = data_config['date']
     target_series = data_config['target']
+
+    print("feature names: ", feature_names)
 
     # Add date column as a feature
     date_feature = pd.to_numeric(pd.to_datetime(date_series)).values.reshape(-1, 1)
@@ -144,6 +146,9 @@ def perform_feature_selection(file_path, selection_method, selection_threshold):
         target_series
     ], axis=1)
 
+    print("Final Dataframe in feature selector: \n", final_df.head(5))
+    print("final df headers: \n", final_df.columns, "\n")
+
     return {
         'selected_features': selected_feature_names,
         'full_dataframe': final_df,
@@ -169,12 +174,16 @@ def main():
     training_df.drop_duplicates(inplace=True)
 
     # Create a unique identifier for each row with the same timestamp
-    training_df['unique_id'] = training_df.groupby('datetime').cumcount() + 1
+    training_df.loc[:, 'unique_id'] = training_df.groupby('datetime').cumcount() + 1
+
+    # drop duplicates
+    training_df = training_df.loc[:, ~training_df.columns.duplicated()]
 
     print(training_df.columns.tolist())
-    print("train df \n", training_df.head(5))
+    print("\ntrain df \n", training_df.head(5))
+    print("\ntrain df cols: \n", training_df.columns)
 
-    print("first checkpoint")
+    print("\nfirst checkpoint")
     train_dataset = TimeSeriesLoader(
         df=training_df,
         selected_features=selection_results['selected_features'],
@@ -185,16 +194,23 @@ def main():
 
     print("second checkpoint")
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+
     print("third checkpoint")
     # Initialize TCN model
+    # Get the number of selected features
+    num_selected_features = len(selection_results['selected_features'])
+
+    # Add 1 for the target (pm2.5) and 1 for the datetime column
+    input_size = num_selected_features + 2
     model = TCNForecaster(
-        input_size=len(selection_results['selected_features']),
+        input_size=input_size,
         output_size=3,
         num_channels=[32, 64, 128],
         kernel_size=3,
         dropout=0.2
     )
 
+    print("input dim: ", len(selection_results['selected_features']), "features: ", selection_results['selected_features'])
     print("fourth checkpoint")
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.MSELoss()
@@ -202,8 +218,8 @@ def main():
     # Training loop
     for epoch in range(10):
         for batch in train_loader:
-            inputs = batch['inputs']  # Correctly access 'inputs' from the dictionary
-            targets = batch['labels']  # Correctly access 'labels' from the dictionary
+            inputs = batch['inputs']
+            targets = batch['labels']
 
             # Debugging prints to check the type and shape of inputs and targets
             print(f"Data type of inputs: {type(inputs)}, Data type of targets: {type(targets)}")
