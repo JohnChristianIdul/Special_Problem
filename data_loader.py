@@ -1,119 +1,113 @@
+from filterpy.kalman import KalmanFilter
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
-from statsmodels.tsa.seasonal import seasonal_decompose
-from filterpy.kalman import KalmanFilter
+from torch.utils.data import Dataset
 import torch
 
 
 class TimeSeriesLoader(Dataset):
     def __init__(self, df, selected_features, timestamp_col, kalman_col, sequence_length):
+        """
+        Initialize the TimeSeriesLoader with dataset preparation steps.
+        """
         self.sequence_length = sequence_length
         self.selected_features = selected_features
         self.timestamp_col = timestamp_col
         self.kalman_col = kalman_col
-        self.categorical_features = None
-        self.numerical_features = None
-        self.norm_train_data = None
         self.log_train_data = None
+        self.norm_train_data = None
 
-        # Add datetime and pm2.5 columns to selected features
-        self.selected_features += ['datetime', 'pm2.5']
+        # Ensure that the dataframe contains necessary columns
+        for feature in self.selected_features:
+            if feature not in df.columns:
+                print(f"Feature {feature} is missing. Adding it with default value 0.")
+                df[feature] = 0
 
-        # Load and preprocess data
         self.train_data = df
-        self.train_data[self.timestamp_col] = pd.to_datetime(self.train_data[self.timestamp_col])
-        self.train_data.set_index(self.timestamp_col, inplace=True)
-        self.train_data.drop_duplicates(inplace=True)
-
-        # Optionally, reset index to keep datetime as a column again
-        self.train_data.reset_index(inplace=True)
-
-        # Prepare the data
         self.clean_data()
         self.preprocess_data()
         self.feature_engineering()
         self.add_temporal_features()
 
         # Filter to relevant features and ensure no missing values
-        self.train_data = self.train_data[self.selected_features]
-        print(self.train_data.head(5))
-        self.train_data.dropna(inplace=True)
+        self.train_data = self.train_data[self.selected_features].dropna()
 
     def clean_data(self):
-        # Check if the datetime column is of correct dtype
-        print("Datetime column dtype before conversion:", self.train_data['datetime'].dtype)
+        """
+        Clean the dataset by handling missing values, setting the datetime index, and removing duplicates.
+        """
+        # Ensure 'datetime' is in the correct format
+        self.train_data[self.timestamp_col] = pd.to_datetime(self.train_data[self.timestamp_col], errors='coerce')
 
-        # Ensure 'datetime' column is converted to datetime type
-        self.train_data['datetime'] = pd.to_datetime(self.train_data['datetime'])
+        # Set the datetime column as the index before interpolation
+        self.train_data.set_index(self.timestamp_col, inplace=True, drop=False)
 
-        # Check dtype again after conversion
-        print("Datetime column dtype after conversion:", self.train_data['datetime'].dtype)
+        # Print to verify index and dtypes
+        print("index: \n", self.train_data.index, "\ndtypes: \n", self.train_data.dtypes)
 
-        # Set 'datetime' column as index
-        self.train_data.set_index('datetime', inplace=True)
+        # Handle missing values across the dataset before doing anything
+        self.train_data.ffill(inplace=True)
+        self.train_data.dropna(inplace=True)
 
-        # Verify the index
-        print("Index after setting datetime:", self.train_data.index)
+        # Check for duplicate datetime entries
+        self.train_data.drop_duplicates(subset=[self.timestamp_col], inplace=True)
 
-        # Handle missing values with time-based interpolation for numerical columns only
-        numeric_cols = self.train_data.select_dtypes(include=['float64', 'int64']).columns
+        # Separate numeric and datetime columns
+        datetime_cols = [col for col in self.train_data.columns if
+                         pd.api.types.is_datetime64_any_dtype(self.train_data[col])]
+        numeric_cols = [col for col in self.train_data.columns if pd.api.types.is_numeric_dtype(self.train_data[col])]
+
+        # Interpolate only numeric columns
         self.train_data[numeric_cols] = self.train_data[numeric_cols].interpolate(method='time', axis=0)
 
-        # Identify categorical and numerical features
-        self.categorical_features = []
-        self.numerical_features = []
+        # Handle any missing values in datetime columns (if necessary)
+        self.train_data[datetime_cols] = self.train_data[datetime_cols].ffill()
 
-        for col, dtype in self.train_data.dtypes.items():
-            if dtype == 'object' or self.train_data[col].nunique() <= 10:
-                self.categorical_features.append(col)
-            elif dtype in ['int64', 'float64']:
-                self.numerical_features.append(col)
-
-        # Drop any duplicate rows (including datetime-based duplicates)
-        self.train_data.drop_duplicates(inplace=True)
-
-        # Check for duplicate timestamps
-        duplicate_timestamps = self.train_data[self.train_data.index.duplicated()]
-        if not duplicate_timestamps.empty:
-            print("columns header: ", duplicate_timestamps.columns)
-            print(f"Duplicate timestamps found: \n{duplicate_timestamps}")
-            # You can handle this by dropping duplicates or aggregating them
-            self.train_data = self.train_data.loc[~self.train_data.index.duplicated(keep='first')]
-
-        # Reset index to include 'datetime' as a column again (optional)
-        self.train_data.reset_index(inplace=True)
+        # Remove any rows with NaN values (after interpolation)
+        self.train_data.dropna(inplace=True)
 
     def preprocess_data(self):
-        # Normalize numerical features
+        """
+        Normalize numerical features and apply log transformation.
+        """
+        # Normalize the numerical columns
         scaler = StandardScaler()
         numeric_cols = self.train_data.select_dtypes(include=['float64', 'int64']).columns
 
+        # Include the kalman_col (pm2.5) in the selected numeric columns
+        selected_numeric_cols = [col for col in numeric_cols if col in self.selected_features] + [self.kalman_col]
+
+        # Ensure that the kalman_col exists in the dataset
+        if self.kalman_col not in self.train_data.columns:
+            raise KeyError(f"Column {self.kalman_col} not found in the training data!")
+
+        # Normalize the selected numeric columns including the kalman_col
         self.norm_train_data = pd.DataFrame(
-            scaler.fit_transform(self.train_data[numeric_cols]),
-            columns=numeric_cols,
+            scaler.fit_transform(self.train_data[selected_numeric_cols]),
+            columns=selected_numeric_cols,
             index=self.train_data.index
         )
 
-        # Log-transform normalized data, handling non-positive values
-        self.norm_train_data[self.norm_train_data <= 0] = np.nan
-        self.log_train_data = np.log(self.norm_train_data)
-        self.log_train_data.fillna(method='ffill', inplace=True)
+        # Log-transform normalized data (handling non-positive values)
+        self.log_train_data = np.log(self.norm_train_data.clip(lower=1e-5))
 
-        self.train_data = self.train_data.loc[~self.train_data.index.duplicated(keep='first')]
+        # Add datetime in ordinal form to log-transformed data
+        self.log_train_data['datetime'] = self.train_data['datetime'].map(pd.Timestamp.toordinal)
 
-    def feature_engineering(self, process_noise_covariance=None, measurement_noise_covariance=None):
-        # Apply Kalman filter to smooth the target feature
+    def feature_engineering(self):
+        """
+        Apply Kalman Filter for smoothing the target feature.
+        """
+        # Apply Kalman filter on the target column (kalman_col)
         kf = KalmanFilter(dim_x=2, dim_z=1)
         kf.F = np.array([[1, 1], [0, 1]])
         kf.H = np.array([[1, 0]])
         kf.x = np.array([[0], [0]])
         kf.P *= 1000
-        kf.Q = process_noise_covariance or np.array([[1, 0], [0, 1]])
-        kf.R = measurement_noise_covariance or np.array([[1]])
+        kf.Q = np.array([[1, 0], [0, 1]])
+        kf.R = np.array([[1]])
 
-        # Apply Kalman filtering
         data_to_filter = self.train_data[self.kalman_col].values
         estimated_positions = []
         for z in data_to_filter:
@@ -122,18 +116,17 @@ class TimeSeriesLoader(Dataset):
             estimated_positions.append(kf.x[0, 0])
 
         self.train_data['kalman_estimate'] = estimated_positions
-        self.train_data = self.train_data.loc[~self.train_data.index.duplicated(keep='first')]
 
     def add_temporal_features(self):
-        # Add temporal features based on the 'datetime' column
-        print("INDEX: ", self.train_data.index)
-
-        # Ensure the 'datetime' column is being used to extract date-related features
+        """
+        Generate temporal features such as day of month, week, and month.
+        """
+        # Add cyclical features for day of month, week, and month
         self.train_data['day_of_month'] = self.train_data['datetime'].dt.day
         self.train_data['week'] = self.train_data['datetime'].dt.isocalendar().week
         self.train_data['month'] = self.train_data['datetime'].dt.month
 
-        # Create cyclical features for periodic data
+        # Generate sin/cos transformations for cyclical features
         self.train_data['sin_day_of_month'] = np.sin(2 * np.pi * self.train_data['day_of_month'] / 31)
         self.train_data['cos_day_of_month'] = np.cos(2 * np.pi * self.train_data['day_of_month'] / 31)
         self.train_data['sin_week'] = np.sin(2 * np.pi * self.train_data['week'] / 52)
@@ -142,36 +135,34 @@ class TimeSeriesLoader(Dataset):
         self.train_data['cos_month'] = np.cos(2 * np.pi * self.train_data['month'] / 12)
 
     def __len__(self):
+        """
+        Return the number of samples in the dataset.
+        """
         return len(self.train_data) - self.sequence_length
 
     def __getitem__(self, idx):
-        # Ensure that the sequence length is fixed
+        """
+        Fetch a sequence of data for a given index.
+        """
         sequence_start = max(0, idx - self.sequence_length + 1)
         sequence_end = idx + 1
 
-        # Extract the sequence of data
+        # Extract the sequence data
         sequence_data = self.log_train_data.iloc[sequence_start:sequence_end].copy()
 
-        # Convert datetime to numeric (Unix timestamp)
-        if 'datetime' in sequence_data.columns:
-            sequence_data['datetime'] = sequence_data['datetime'].astype(int) // 10 ** 9  # Convert to Unix timestamp
+        # Ensure pm2.5 is included in the inputs
+        inputs_columns = [col for col in sequence_data.columns]
+        inputs = sequence_data[inputs_columns].values.T.astype(np.float32)
 
-        # Prepare inputs (exclude target column)
-        inputs_columns = [col for col in sequence_data.columns if col != self.kalman_col]
-        inputs = sequence_data[inputs_columns]
+        # Check if the kalman_col (pm2.5) exists in sequence_data
+        if self.kalman_col not in sequence_data.columns:
+            raise KeyError(f"Column {self.kalman_col} not found in the sequence data!")
 
-        # Convert inputs to float32
-        inputs = inputs.astype(np.float32)
-
-        # Prepare labels (target column)
+        # Now, include pm2.5 as part of the labels (this is the column we use for labels)
         labels = sequence_data[self.kalman_col].values.astype(np.float32)
 
-        # Reshape inputs for sequence model
-        inputs = inputs.values.T  # Transpose to get (features, sequence_length)
-
-        # Ensure inputs are of consistent shape
+        # Pad the inputs if they are shorter than the expected sequence length
         if inputs.shape[1] < self.sequence_length:
-            # Pad the inputs if they are shorter than the expected length
             padding = np.zeros((inputs.shape[0], self.sequence_length - inputs.shape[1]), dtype=np.float32)
             inputs = np.concatenate((inputs, padding), axis=1)
 

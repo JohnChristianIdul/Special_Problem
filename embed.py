@@ -3,10 +3,6 @@ import torch.nn as nn
 import math
 
 
-import torch
-import torch.nn as nn
-import math
-
 class PositionalEmbedding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEmbedding, self).__init__()

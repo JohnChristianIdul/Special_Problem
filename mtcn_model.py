@@ -3,10 +3,6 @@ import torch.nn as nn
 
 
 class TCNSingleBlock(nn.Module):
-    """
-    A single block of the Temporal Convolutional Network (TCN), consisting of
-    two dilated causal convolutions with residual connections.
-    """
     def __init__(self, input_dim, output_dim, kernel_size, stride, dilation, padding, dropout):
         super(TCNSingleBlock, self).__init__()
         # First convolution layer
@@ -21,35 +17,35 @@ class TCNSingleBlock(nn.Module):
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
 
-        # Residual connection
+        # Residual connection (downsample if input_dim != output_dim)
         self.downsample = nn.Conv1d(input_dim, output_dim, kernel_size=1) if input_dim != output_dim else None
-        self.relu = nn.ReLU()
 
     def forward(self, x):
-        print("Input shape to conv1:", x.shape)  # Print shape before applying conv1
         # Apply the first convolution block
         out = self.conv1(x)
-        print("Shape after conv1:", out.shape)  # Print shape after applying conv1
         out = self.relu1(out)
-        print("Shape after relu1:", out.shape)
         out = self.dropout1(out)
-        print("Shape after dropout1:", out.shape)
 
         # Apply the second convolution block
         out = self.conv2(out)
         out = self.relu2(out)
         out = self.dropout2(out)
 
-        # Add residual connection
+        # Residual connection (ensure shapes match)
         res = x if self.downsample is None else self.downsample(x)
 
-        return self.relu(out + res)
+        # Ensure the sequence length of `out` matches `res`
+        if out.size(2) != res.size(2):
+            if out.size(2) > res.size(2):
+                out = out[:, :, :res.size(2)]  # Slice the larger tensor
+            else:
+                padding = (0, res.size(2) - out.size(2))  # Calculate padding
+                out = torch.nn.functional.pad(out, padding)  # Pad the smaller tensor
+
+        return self.relu1(out + res)
 
 
 class TemporalConvNet(nn.Module):
-    """
-    TCN Model with multiple temporal blocks.
-    """
     def __init__(self, input_dim, num_channels, kernel_size=3, dropout=0.2):
         super(TemporalConvNet, self).__init__()
         self.layers = nn.ModuleList()
@@ -57,11 +53,11 @@ class TemporalConvNet(nn.Module):
         self.kernel_size = kernel_size
         self.dropout = dropout
 
-        # Initialize layers
+        # Initialize layers (first layer should take input_dim as 3, as your data has 3 features)
         num_levels = len(self.num_channels)
         for i in range(num_levels):
             dilation_size = 2 ** i
-            in_channels = input_dim
+            in_channels = input_dim if i == 0 else self.num_channels[i - 1]  # First layer takes input_dim as input
             out_channels = self.num_channels[i]
             self.layers.append(
                 TCNSingleBlock(in_channels, out_channels, self.kernel_size,
@@ -77,14 +73,11 @@ class TemporalConvNet(nn.Module):
 
 
 class TCNForecaster(nn.Module):
-    """
-    TCN model for multivariate time-series forecasting.
-    """
     def __init__(self, input_size, output_size, num_channels, kernel_size=3, dropout=0.2):
         super(TCNForecaster, self).__init__()
         # Temporal Convolutional Network (TCN)
         self.tcn = TemporalConvNet(input_size, num_channels, kernel_size, dropout)
-        # Fully connected layer to map the last time step to the output size
+        # Fully connected layer to output 1 value (scalar)
         self.linear = nn.Linear(num_channels[-1], output_size)
 
     def forward(self, x):
@@ -95,11 +88,22 @@ class TCNForecaster(nn.Module):
         Returns:
             Tensor of shape (batch_size, output_size)
         """
-        # Ensure x is in the right shape (batch_size, input_size, sequence_length)
+        print(f"Input shape before preprocessing: {x.shape}")  # Debugging the input shape
+
+        # Ensure x has 3 dimensions: (batch_size, input_size, sequence_length)
         if len(x.shape) == 2:
             x = x.unsqueeze(0)  # Add batch dimension if missing
 
-        tcn_out = self.tcn(x)  # (batch_size, num_channels[-1], sequence_length)
-        tcn_out = tcn_out[:, :, -1]  # Take the last time step (batch_size, num_channels[-1])
-        output = self.linear(tcn_out)  # (batch_size, output_size)
+        x = x.permute(0, 1, 2)
+
+        # Pass through the Temporal Convolutional Network
+        tcn_out = self.tcn(x)
+
+        # Extract the last time step (last feature across the sequence)
+        tcn_out = tcn_out[:, :, -1]  # We can use the last time step for prediction
+
+        # Pass through the fully connected layer to get the final output
+        output = self.linear(tcn_out)
+        print(f"Output shape: {output.shape}")
+
         return output
