@@ -1,5 +1,6 @@
 from filterpy.kalman import KalmanFilter
 from sklearn.preprocessing import StandardScaler
+from statsmodels.tsa.seasonal import seasonal_decompose
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
@@ -47,8 +48,10 @@ class TimeSeriesLoader(Dataset):
         print("index: \n", self.train_data.index, "\ndtypes: \n", self.train_data.dtypes)
 
         # Handle missing values across the dataset before doing anything
-        self.train_data.ffill(inplace=True)
-        self.train_data.dropna(inplace=True)
+        # result = seasonal_decompose(self.train_data['pm2.5'], model='additive', period=12, extrapolate_trend='freq')
+        # self.train_data['pm2.5'] = self.train_data['pm2.5'].fillna(result)
+        # self.train_data.ffill(inplace=True)
+        # self.train_data.dropna(inplace=True)
 
         # Check for duplicate datetime entries
         self.train_data.drop_duplicates(subset=[self.timestamp_col], inplace=True)
@@ -93,7 +96,7 @@ class TimeSeriesLoader(Dataset):
         self.log_train_data = np.log(self.norm_train_data.clip(lower=1e-5))
 
         # Add datetime in ordinal form to log-transformed data
-        self.log_train_data['datetime'] = self.train_data['datetime'].map(pd.Timestamp.toordinal)
+        self.log_train_data['Date Time'] = self.train_data['Date Time'].map(pd.Timestamp.toordinal)
 
     def feature_engineering(self):
         """
@@ -122,9 +125,9 @@ class TimeSeriesLoader(Dataset):
         Generate temporal features such as day of month, week, and month.
         """
         # Add cyclical features for day of month, week, and month
-        self.train_data['day_of_month'] = self.train_data['datetime'].dt.day
-        self.train_data['week'] = self.train_data['datetime'].dt.isocalendar().week
-        self.train_data['month'] = self.train_data['datetime'].dt.month
+        self.train_data['day_of_month'] = self.train_data['Date Time'].dt.day
+        self.train_data['week'] = self.train_data['Date Time'].dt.isocalendar().week
+        self.train_data['month'] = self.train_data['Date Time'].dt.month
 
         # Generate sin/cos transformations for cyclical features
         self.train_data['sin_day_of_month'] = np.sin(2 * np.pi * self.train_data['day_of_month'] / 31)

@@ -13,7 +13,7 @@ from informer_model import Informer
 from mtcn_model import TCNForecaster
 
 
-def preprocess_data_feature(file_path, target_column, date_columns):
+def preprocess_data_feature(file_path, target_column):
     """
     Preprocess the data:
     - Load data
@@ -27,56 +27,82 @@ def preprocess_data_feature(file_path, target_column, date_columns):
     if df.columns.duplicated().any():
         raise ValueError(f"Duplicate columns found: {df.columns[df.columns.duplicated()]}")
 
+    df['Date Time'] = pd.to_datetime(df['Date Time'], format='%d.%m.%Y %H:%M:%S')
     # Fill missing values and drop rows with NA
-    df.ffill(inplace=True)
+    # df.ffill(inplace=True)
     df.dropna(inplace=True)
-    df.drop(columns=['No'], inplace=True)  # Drop unwanted columns
 
     # Combine year, month, day, and hour into a single datetime column
-    df['datetime'] = pd.to_datetime(df[date_columns])
+    # df['Date Time'] = pd.to_datetime(df[date_columns])
 
     # Separate target column and combine datetime components
     target_series = df[target_column]
 
-    # Drop individual datetime components and keep only 'datetime' in features
-    df.drop(columns=date_columns, inplace=True)
-    feature_data = df.drop(columns=[target_column, 'datetime'])
+    # Drop individual datetime components and keep only 'Date Time' in features
+    # df.drop(columns=date_columns, inplace=True)
+    feature_data = df.drop(columns=[target_column, 'Date Time'])
 
+    print("Checkpoint 1")
     # Identify numerical and categorical columns
     numerical_cols = feature_data.select_dtypes(include=['int64', 'float64']).columns.tolist()
     categorical_cols = feature_data.select_dtypes(include=['object', 'category']).columns.tolist()
 
+    print("Checkpoint 2")
     # Apply scaling and one-hot encoding
     preprocessor = ColumnTransformer([
         ('num', MinMaxScaler(), numerical_cols),
         ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_cols)
     ])
 
+    print("Checkpoint 3")
     transformed_features = preprocessor.fit_transform(feature_data)
+    #
+    # feature_names = numerical_cols + list(
+    #     preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_cols)
+    # )
+    feature_names = numerical_cols
 
-    feature_names = numerical_cols + list(
-        preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_cols)
-    )
+    print("Checkpoint 4")
+    # Define a reference start date (e.g., the earliest date in your dataset)
+    start_date = df['Date Time'].min()
 
-    # Add 'datetime' column back as part of the selected features (feature engineering)
-    datetime_feature = (df['datetime'].
-                        apply(lambda x: x.hour + x.day * 24 + x.month * 30 * 24 + x.year * 365 * 24).
-                        values.reshape(-1, 1))
+    # Calculate the difference in hours from the start date (vectorized operation)
+    df['datetime_feature'] = (df['Date Time'] - start_date).dt.total_seconds() / 3600
+
+    # Now, the 'datetime_feature' is a column with numeric values representing the number of hours
+    datetime_feature = df['datetime_feature'].values.reshape(-1, 1)
+
+    # Checkpoint: print out the first few values to ensure it's correct
+    print("Checkpoint 5")
+    print("head of datetime_feature: \n", df['datetime_feature'].head(5))
+
+    # Assuming transformed_features is your processed feature matrix
+    # Ensure the shape of transformed_features matches the required number of rows (420,551)
+    print("Checkpoint 5")
+    print("tfeatures shape: ", transformed_features.shape)  # Should be (420551, n_features)
+    print("dfeatures shape: ", datetime_feature.shape)  # Should be (420551, 1)
 
     # Concatenate the transformed features with the datetime feature
     features_with_datetime = np.hstack((transformed_features, datetime_feature))
 
+    # Final shape after concatenation
+    print("Shape after concatenation: ", features_with_datetime.shape)
+
+    print("Checkpoint 6")
     # Include datetime and target in the final dataframe
     final_df = pd.concat([
-        df['datetime'],
-        pd.DataFrame(features_with_datetime, columns=feature_names + ['datetime']),
+        df['Date Time'],
+        pd.DataFrame(features_with_datetime, columns=feature_names + ['Date Time']),
         target_series
     ], axis=1)
 
+    # Print the dimensions of the final dataframe
+    print(f"Dimensions of the final processed data: {final_df.shape}")
+
     return {
         'features': features_with_datetime,
-        'feature_names': feature_names + ['datetime'],
-        'date': df['datetime'],
+        'feature_names': feature_names + ['Date Time'],
+        'date': df['Date Time'],
         'target': target_series,
         'scalers': {
             'numeric': preprocessor.named_transformers_['num'],
@@ -91,8 +117,7 @@ def perform_feature_selection(file_path, selection_method, selection_threshold):
     """
     data_config = preprocess_data_feature(
         file_path,
-        target_column='pm2.5',
-        date_columns=['year', 'month', 'day', 'hour']
+        target_column='T (degC)'
     )
 
     features = data_config['features']
@@ -153,65 +178,68 @@ def main():
     """
     Main function to load data, perform feature selection, and train the model.
     """
-    file_path = "beijing+pm2+5+data/PRSA_data_2010.1.1-2014.12.31.csv"
+    file_path = "jena_climate_2009_2016.csv/jena_climate_2009_2016.csv"
 
     # Perform feature selection using the Informer model
-    selection_results = perform_feature_selection(file_path, 'importance', 0.3)
+    selection_results = perform_feature_selection(file_path, 'importance', 0.5)
 
     # Prepare the dataset based on the selected features
     training_df = selection_results['full_dataframe']
     training_df.ffill(inplace=True)
 
-    # Ensure 'datetime' column is in the correct format (before conversion to datetime type)
-    training_df.drop_duplicates(subset=['datetime'], inplace=True)
+    # Ensure 'Date Time' column is in the correct format (before conversion to datetime type)
+    training_df.drop_duplicates(subset=['Date Time'], inplace=True)
 
-    # Now, ensure 'datetime' column is properly parsed as datetime type
-    training_df['datetime'] = pd.to_datetime(training_df['datetime'], errors='coerce')
+    # Now, ensure 'Date Time' column is properly parsed as datetime type
+    training_df['Date Time'] = pd.to_datetime(training_df['Date Time'], errors='coerce')
 
     # Handle any NaT (Not a Time) values resulting from coercion
-    training_df.dropna(subset=['datetime'], inplace=True)
-    training_df.drop_duplicates(subset=['datetime'], inplace=True)
+    # training_df.dropna(subset=['Date Time'], inplace=True)
+    training_df.drop_duplicates(subset=['Date Time'], inplace=True)
 
-    # Check the 'datetime' column and its dimensions
-    # print("Datetime column shape:", training_df['datetime'].shape)
-    # print("Datetime column head:", training_df['datetime'].head())
-    # print("Datetime type:", training_df['datetime'].dtypes)
+    # Check the 'Date Time' column and its dimensions
+    # print("Datetime column shape:", training_df['Date Time'].shape)
+    # print("Datetime column head:", training_df['Date Time'].head())
+    # print("Datetime type:", training_df['Date Time'].dtypes)
 
-    # Reset index if 'datetime' is in the index
+    # Reset index if 'Date Time' is in the index
     if isinstance(training_df.index, pd.DatetimeIndex):
         training_df.reset_index(inplace=True)
 
     print("Check columns: ", training_df.columns)
 
     # Create 'unique_id' to ensure there are no further duplicates
-    if 'datetime' in training_df.columns:
-        training_df['unique_id'] = training_df.groupby('datetime').cumcount() + 1
+    if 'Date Time' in training_df.columns:
+        training_df['unique_id'] = training_df.groupby('Date Time').cumcount() + 1
 
+    print("Features selected: \n", selection_results['selected_features'])
     # Drop any remaining duplicates just in case
-    training_df.drop_duplicates(subset=['datetime'], inplace=True)
+    training_df.drop_duplicates(subset=['Date Time'], inplace=True)
 
     # Create TimeSeriesLoader with the selected features
     train_dataset = TimeSeriesLoader(
         df=training_df,
         selected_features=selection_results['selected_features'],
-        timestamp_col='datetime',
-        kalman_col='pm2.5',
+        timestamp_col='Date Time',
+        kalman_col='T (degC)',
         sequence_length=30
     )
 
     # Create DataLoader with custom collate function
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=250, shuffle=False, collate_fn=collate_fn)
 
     # Initialize the TCN model
     input_s = len(selection_results['selected_features'])
     input_s += 2
     model = TCNForecaster(
         input_size=input_s,
-        output_size=1,
-        num_channels=[32, 64, 128],
+        output_size=30,
+        num_channels=[8, 16, 32],
         kernel_size=3,
         dropout=0.2
     )
+
+    print("Check for Nan values: \n", training_df.values == 0)
 
     # Set up optimizer and loss function
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -244,7 +272,7 @@ def main():
 
             # Make predictions
             outputs = model(inputs)
-            predictions.append(outputs.numpy().flatten())  # Flatten to make it 1D for plotting
+            predictions.append(outputs.numpy().flatten())
             actual_value.append(targets.numpy().flatten())
 
     # Convert predictions and actuals to numpy arrays
@@ -253,11 +281,11 @@ def main():
 
     # Plot the results
     plt.figure(figsize=(12, 6))
-    plt.plot(actual_value, label='Actual PM2.5')
-    plt.plot(predictions, label='Predicted PM2.5', linestyle='--')
-    plt.title('Actual vs Predicted PM2.5')
-    plt.xlabel('Time')
-    plt.ylabel('PM2.5')
+    plt.plot(actual_value, label='Actual')
+    plt.plot(predictions, label='Predicted', linestyle='--')
+    plt.title('Actual vs Predicted T (degC)')
+    plt.xlabel('Date Time')
+    plt.ylabel('T (degC)')
     plt.legend()
     plt.show()
 
