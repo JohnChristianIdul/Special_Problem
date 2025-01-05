@@ -136,6 +136,7 @@ def main():
 
     # Get selected features and preprocessed data
     selection_results = perform_feature_selection(file_path, 'importance', 0.5)
+    print(f"Features selected for training: {selection_results['selected_features']}")
     training_df = selection_results['full_dataframe']
     training_df.ffill(inplace=True)
 
