@@ -157,7 +157,7 @@ def main():
 
     # Training parameters
     sequence_length = 30
-    num_epochs = 100  # 100
+    num_epochs = 50  # 100
     batch_size = 250
 
     print("Starting training...")
