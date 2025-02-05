@@ -112,34 +112,69 @@ class TCNTrainer:
         self.optimizer = optimizer
         self.device = device
 
+    def train_step(self, batch_x, batch_y):
+        """Single training step for one batch"""
+        self.model.train()
+        try:
+            outputs = self.model(batch_x)  # Shape: [batch_size, sequence_length, output_dim]
+            outputs = outputs.squeeze(-1)  # Adjust if output_dim=1
+            loss = self.criterion(outputs, batch_y)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            return loss.item()
+        except Exception as e:
+            print(f"Error during training step: {e}")
+            print(f"Input shape: {batch_x.shape}")
+            return 0
+
+    def validate_step(self, batch_x, batch_y):
+        """Single validation step for one batch"""
+        self.model.eval()
+        with torch.no_grad():
+            outputs = self.model(batch_x).squeeze()
+            loss = self.criterion(outputs, batch_y)
+            return loss.item()
+
     def train_epoch(self, train_loader):
         self.model.train()
         total_loss = 0
-        for batch_x, batch_y in train_loader:
+        for batch in train_loader:
             try:
-                batch_x = batch_x.to(self.device)
-                batch_y = batch_y.to(self.device)
-                outputs = self.model(batch_x).squeeze()
-                loss = self.criterion(outputs, batch_y)
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                total_loss += loss.item()
+                if isinstance(batch, dict):
+                    batch_x = batch['inputs'].to(self.device)
+                    batch_y = batch['labels'].to(self.device)
+                else:
+                    batch_x, batch_y = batch
+                    batch_x = batch_x.to(self.device)
+                    batch_y = batch_y.to(self.device)
+
+                loss = self.train_step(batch_x, batch_y)
+                total_loss += loss
             except Exception as e:
                 print(f"Error during training: {e}")
-                print(f"Input shape: {batch_x.shape}")
+                print(f"Batch type: {type(batch)}")
+                if isinstance(batch, dict):
+                    print(f"Input shape: {batch['inputs'].shape}")
+                else:
+                    print(f"Input shape: {batch_x.shape}")
         return total_loss / len(train_loader)
 
     def validate(self, val_loader):
         self.model.eval()
         total_loss = 0
         with torch.no_grad():
-            for batch_x, batch_y in val_loader:
-                batch_x = batch_x.to(self.device)
-                batch_y = batch_y.to(self.device)
-                outputs = self.model(batch_x).squeeze()
-                loss = self.criterion(outputs, batch_y)
-                total_loss += loss.item()
+            for batch in val_loader:
+                if isinstance(batch, dict):
+                    batch_x = batch['inputs'].to(self.device)
+                    batch_y = batch['labels'].to(self.device)
+                else:
+                    batch_x, batch_y = batch
+                    batch_x = batch_x.to(self.device)
+                    batch_y = batch_y.to(self.device)
+
+                loss = self.validate_step(batch_x, batch_y)
+                total_loss += loss
         return total_loss / len(val_loader)
 
     def predict(self, x):
@@ -163,7 +198,7 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
     output_size = 1
     num_channels = [16, 32, 64]
 
-    # print(f"Input size: {input_size}")
+    print(f"Input size: {input_size}")
 
     model = create_forecaster(input_size, output_size, num_channels)
     criterion = nn.MSELoss()
@@ -171,6 +206,8 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
     trainer = TCNTrainer(model, criterion, optimizer)
 
     history = {'train_loss': [], 'val_loss': []}
+
+    print("Start training...")
 
     for epoch in range(num_epochs):
         train_loss = trainer.train_epoch(train_loader)

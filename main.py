@@ -1,20 +1,13 @@
 import torch
-import torch.nn as nn
 import pandas as pd
 import numpy as np
 import scipy.sparse
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from torch.utils.data import DataLoader
-from darts import TimeSeries
 import matplotlib.pyplot as plt
-
-from data_loader import TimeSeriesLoader
 from informer_model import Informer
-from mtcn_model import (
-    TimeSeriesDataset,
-    train_and_predict
-)
+from mtcn_model import train_and_predict, TimeSeriesDataset
 
 
 def preprocess_data_feature(file_path, target_column):
@@ -29,37 +22,29 @@ def preprocess_data_feature(file_path, target_column):
     target_series = df[target_column]
     feature_data = df.drop(columns=[target_column])
 
-    # Add datetime feature as hours since the start of the dataset
     start_date = df['Date Time'].min()
     df['datetime_feature'] = (df['Date Time'] - start_date).dt.total_seconds() / 3600
     datetime_feature = df['datetime_feature'].values.reshape(-1, 1)
 
-    # Drop the original 'Date Time' column to avoid non-numerical data
     feature_data = feature_data.drop(columns=['Date Time'])
 
     numerical_cols = feature_data.select_dtypes(include=['int64', 'float64']).columns.tolist()
     categorical_cols = feature_data.select_dtypes(include=['object', 'category']).columns.tolist()
 
-    # Initialize transformers list
     transformers = [('num', MinMaxScaler(), numerical_cols)]
 
-    # Only add categorical transformer if there are categorical columns
     if categorical_cols:
         transformers.append(('cat', OneHotEncoder(handle_unknown='ignore'), categorical_cols))
 
     preprocessor = ColumnTransformer(transformers)
 
-    # Fit and transform the features
     transformed_features = preprocessor.fit_transform(feature_data)
 
-    # Convert sparse matrix to dense if necessary
     if scipy.sparse.issparse(transformed_features):
         transformed_features = transformed_features.toarray()
 
-    # Append datetime feature to the processed features
     features_with_datetime = np.hstack((transformed_features, datetime_feature))
 
-    # Prepare feature names
     feature_names = numerical_cols
     if categorical_cols:
         try:
@@ -102,13 +87,23 @@ def perform_feature_selection(file_path, selection_method, selection_threshold):
     max_importance = importance_scores.max().item()
     selected_indices = [i for i, score in enumerate(importance_scores) if score.item() == max_importance]
     selected_feature_names = [feature_names[i] for i in selected_indices]
+
+    # TODO: Hard select the features from the testing to build the model
+    # selected_feature_names = ["datetime_feature", "Tdew (degC)", "rh (%)", "sh (g/kg)", "H2OC (mmol/mol)", "rho (g/m**3)"]
+    # selected_indices = [i for i, name in enumerate(feature_names) if name in selected_feature_names]
     selected_feature_data = features[:, selected_indices]
+
+    # Debugging prints
+    print(f"Valid Selected Feature Names: {feature_names}")
+    print(f"Selected Indices: {selected_indices}")
+    print(f"Shape of selected_feature_data: {selected_feature_data.shape}")
 
     final_df = pd.concat([
         data_config['date'],
         pd.DataFrame(selected_feature_data, columns=selected_feature_names),
         data_config['target']
     ], axis=1)
+
 
     return {
         'selected_features': selected_feature_names,
@@ -117,6 +112,14 @@ def perform_feature_selection(file_path, selection_method, selection_threshold):
         'target': data_config['target']
     }
 
+
+def time_temporal_features_extraction(training_df, features):
+    features['day_of_week'] = training_df['Date Time'].dt.dayofweek
+    features['week'] = training_df['Date Time'].dt.isocalendar().week
+    features['month'] = training_df['Date Time'].dt.month
+
+    return features
+    
 
 def collate_fn(batch):
     inputs = [item['inputs'] for item in batch]
@@ -136,15 +139,25 @@ def main():
 
     # Get selected features and preprocessed data
     selection_results = perform_feature_selection(file_path, 'importance', 0.5)
+    # selection_results = ["Date Time", "Tdew (degC)", "rh (%)", "sh (g/kg)", "H20C (mmol/mol)", "rho (g/m**3)"]
     training_df = selection_results['full_dataframe']
     training_df.ffill(inplace=True)
 
-    # Handle any NaT (Not a Time) values resulting from coercion
+    # Print the selected features
+    print("Selected Features:", selection_results['selected_features'])
+
+    # Handle NaT and duplicate timestamps
     training_df.dropna(subset=['Date Time'], inplace=True)
     training_df.drop_duplicates(subset=['Date Time'], inplace=True)
 
+    # Extract time-based temporal features
+    training_df = time_temporal_features_extraction(training_df, training_df)
+
+    # Update selected features list to include temporal features
+    selected_feature_names = selection_results['selected_features'] + ['day_of_week', 'week', 'month']
+
     # Prepare features and target
-    features = training_df[selection_results['selected_features']].values
+    features = training_df[selected_feature_names].values  # Now includes temporal features
     targets = training_df['T (degC)'].values
 
     # Ensure all features are numerical
@@ -156,10 +169,10 @@ def main():
 
     # Training parameters
     sequence_length = 30
-    num_epochs = 100  # 100
+    num_epochs = 50
     batch_size = 250
 
-    print("Starting training...")
+    # Train and predict using modified TCN model
     trainer, history = train_and_predict(
         features=features_tensor,
         targets=targets_tensor,
@@ -184,9 +197,10 @@ def main():
     predictions = []
     actual_values = []
 
+    # TODO: add code here for saving the model as pkl file or joblib
+
     # Create dataset for testing
     test_dataset = TimeSeriesDataset(features, targets, sequence_length)
-    print(f"-----\nfeatures: {features}\ntargets: {targets}\nsequence_length: {sequence_length}\n-----")
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     with torch.no_grad():
@@ -217,3 +231,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# TODO: Add a code for deployment to streamlit, you can have it in another file
