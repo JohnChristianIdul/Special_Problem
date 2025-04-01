@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
 class TCNSingleBlock(nn.Module):
@@ -163,21 +165,40 @@ class TCNTrainer:
     def validate(self, val_loader):
         self.model.eval()
         total_loss = 0
+        all_preds = []
+        all_targets = []
+
         with torch.no_grad():
             for batch in val_loader:
-                if isinstance(batch, dict):
-                    batch_x = batch['inputs'].to(self.device)
-                    batch_y = batch['labels'].to(self.device)
-                else:
-                    batch_x, batch_y = batch
-                    batch_x = batch_x.to(self.device)
-                    batch_y = batch_y.to(self.device)
+                batch_x, batch_y = batch
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
 
-                loss = self.validate_step(batch_x, batch_y)
-                total_loss += loss
-        return total_loss / len(val_loader)
+                outputs = self.model(batch_x).squeeze()
+                loss = self.criterion(outputs, batch_y)
+                total_loss += loss.item()
 
-    def predict(self, x):
+                all_preds.extend(outputs.cpu().numpy())
+                all_targets.extend(batch_y.cpu().numpy())
+
+        avg_loss = total_loss / len(val_loader)
+        mae = mean_absolute_error(all_targets, all_preds)
+        mse = mean_squared_error(all_targets, all_preds)
+        rmse = np.sqrt(mse)
+
+        # TO avoid Dividing by zero error
+        all_targets = np.array(all_targets)
+        all_preds = np.array(all_preds)
+        nonzero_mask = all_targets != 0
+        mape = np.mean(
+            np.abs((all_targets[nonzero_mask] - all_preds[nonzero_mask]) / all_targets[nonzero_mask])) * 100 if np.any(
+            nonzero_mask) else float('inf')
+
+        print(f"Validation - MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, MAPE: {mape:.2f}%")
+        return avg_loss, mse, rmse, mae, mape
+
+
+def predict(self, x):
         self.model.eval()
         with torch.no_grad():
             x = torch.FloatTensor(x).unsqueeze(0).to(self.device)
@@ -215,6 +236,8 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
+            print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, '
+                  f'Val Loss: {val_loss[0]:.4f}, MSE: {val_loss[1]:.4f}, RMSE: {val_loss[2]:.4f}, '
+                  f'MAE: {val_loss[3]:.4f}, MAPE: {val_loss[4]:.2f}%')
 
     return trainer, history

@@ -62,7 +62,7 @@ class Informer(nn.Module):
 
         # Ensure x is 2D (batch, features)
         if x.dim() > 2:
-            x = x.mean(dim=tuple(range(2, x.dim())))  # Reduce to (batch, features)
+            x = x.mean(dim=tuple(range(2, x.dim())))
 
         # Compute the mean over the batch
         x_mean = x.mean(dim=0)
@@ -75,7 +75,7 @@ class Informer(nn.Module):
             # Calculate importance scores
             importance_scores = self.feature_importance_network(x_mean).mean(dim=0)
         elif self.selection_method == 'variance':
-            importance_scores = x.std(dim=0)  # Use variance as importance
+            importance_scores = x.std(dim=0)
         else:
             importance_scores = torch.ones(self.enc_in, device=x.device)
 
