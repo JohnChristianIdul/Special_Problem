@@ -113,13 +113,23 @@ def perform_feature_selection(file_path, selection_method, selection_threshold):
     }
 
 
-def time_temporal_features_extraction(training_df, features):
+def time_temporal_features_extraction(training_df, features, window_size=7):
     features['day_of_week'] = training_df['Date Time'].dt.dayofweek
     features['week'] = training_df['Date Time'].dt.isocalendar().week
     features['month'] = training_df['Date Time'].dt.month
+    features['season'] = training_df['Date Time'].dt.month % 12 // 3 + 1
+    features['year'] = training_df['Date Time'].dt.year
+
+    # Add rolling lags for features
+    features['temp_7d_rolling_avg'] = training_df['Temperature'].rolling(window=window_size).mean()
+    features['humidity_7d_rolling_avg'] = training_df['Humidity'].rolling(window=window_size).mean()
+
+    features['temp_lag_1'] = training_df['Temperature'].shift(1)
+    features['temp_lag_3'] = training_df['Temperature'].shift(3)
+    features['rain_lag_1'] = training_df['Rainfall'].shift(1)
 
     return features
-    
+
 
 def collate_fn(batch):
     inputs = [item['inputs'] for item in batch]
