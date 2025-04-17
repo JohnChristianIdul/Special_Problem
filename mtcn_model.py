@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
@@ -204,27 +204,44 @@ class TCNTrainer:
         print(f"Validation - MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, MAPE: {mape:.2f}%")
         return avg_loss, mse, rmse, mae, mape
 
-    def predict(self, x):
+    def predict(self, x, steps=12):  # 12 steps for 2 hours, as each step is 10 minutes
         self.model.eval()
+        predictions = []
+        input_seq = x.unsqueeze(0).to(self.device)  # Ensure the input tensor is properly batched
+
+        print("Initial Input Shape:", input_seq.shape)  # Debugging the input shape
+
         with torch.no_grad():
-            x = torch.FloatTensor(x).unsqueeze(0).to(self.device)
-            output = self.model(x)
-            return output.cpu().numpy()
+            for _ in range(steps):
+                output = self.model(input_seq)  # Generate output for current input sequence
+                predictions.append(output.cpu().numpy().flatten())
+
+                # Prepare the next input sequence
+                # Assuming output is [batch_size, features], where features should match the expected channel input of the TCN
+                next_input = output.view(1, -1, 1)  # Reshape if necessary to match [batch, features, sequence_length]
+
+                # Slide the window of inputs to exclude the oldest input and include the new output
+                input_seq = torch.cat((input_seq[:, :, 1:], next_input), dim=2)
+
+                print("New Input Shape:", input_seq.shape)  # Debugging the updated input shape
+
+        predictions = np.concatenate(predictions).flatten()
+        return predictions
 
 
 def train_and_predict(features, targets, sequence_length, num_epochs, batch_size):
     dataset = TimeSeriesDataset(features, targets, sequence_length)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
-    input_size = features.shape[1]
-    output_size = 1
-    # num_channels = [16, 32, 64]
-    num_channels = [64, 128, 256]
+    input_size = features.shape[1]   # Number of features
+    output_size = 1  # Predicting a single value
+    num_channels = [128, 256, 512]  # Depth of each TCN layer
+    # num_channels = [64, 128, 256]  # Depth of each TCN layer
 
     model = create_forecaster(input_size, output_size, num_channels)
     criterion = nn.MSELoss()
@@ -232,7 +249,6 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
     trainer = TCNTrainer(model, criterion, optimizer)
 
     history = {'train_loss': [], 'val_loss': []}
-
     print("Start training...")
 
     for epoch in range(num_epochs):
@@ -240,9 +256,11 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
         val_loss = trainer.validate(val_loader)
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
+
         if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, '
-                  f'Val Loss: {val_loss[0]:.4f}, MSE: {val_loss[1]:.4f}, RMSE: {val_loss[2]:.4f}, '
-                  f'MAE: {val_loss[3]:.4f}, MAPE: {val_loss[4]:.2f}%')
+            # print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
+            print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, 'f'Val Loss: {val_loss[0]:.4f}, '
+                  f'MSE: {val_loss[1]:.4f}, RMSE: {val_loss[2]:.4f}, 'f'MAE: {val_loss[3]:.4f}, '
+                  f'MAPE: {val_loss[4]:.2f}%')
 
     return trainer, history

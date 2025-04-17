@@ -22,6 +22,7 @@ class PositionalEmbedding(nn.Module):
     def forward(self, x):
         return self.pe[:, :x.size(1)]
 
+
 class FeatureSelectionEmbedding(nn.Module):
     def __init__(self, c_in, d_model, selection_method='importance'):
         super(FeatureSelectionEmbedding, self).__init__()
@@ -94,6 +95,7 @@ class FeatureSelectionEmbedding(nn.Module):
 
         return embedded_features, selected_indices
 
+
 class TokenEmbedding(nn.Module):
     def __init__(self, c_in, d_model):
         super(TokenEmbedding, self).__init__()
@@ -144,13 +146,13 @@ class TemporalEmbedding(nn.Module):
         day_size = 32
         month_size = 13
 
-        Embed = nn.Embedding
+        embed = nn.Embedding
         if freq == 't':
-            self.minute_embed = Embed(minute_size, d_model)
-        self.hour_embed = Embed(hour_size, d_model)
-        self.weekday_embed = Embed(weekday_size, d_model)
-        self.day_embed = Embed(day_size, d_model)
-        self.month_embed = Embed(month_size, d_model)
+            self.minute_embed = embed(minute_size, d_model)
+        self.hour_embed = embed(hour_size, d_model)
+        self.weekday_embed = embed(weekday_size, d_model)
+        self.day_embed = embed(day_size, d_model)
+        self.month_embed = embed(month_size, d_model)
 
     def forward(self, x):
         x = x.long()
@@ -195,8 +197,6 @@ class DataEmbedding(nn.Module):
         x_embedded, selected_indices = self.value_embedding(x, threshold)
 
         # Add positional and temporal embeddings
-        x_embedded = x_embedded + \
-                     self.position_embedding(x_embedded) + \
-                     self.temporal_embedding(x_mark)
+        x_embedded = x_embedded + self.position_embedding(x_embedded) + self.temporal_embedding(x_mark)
 
         return self.dropout(x_embedded), selected_indices

@@ -14,19 +14,21 @@ csv_path = "E:\School\\4th year - 1st sem\Thesis\Model\processed_data.csv"
 csv_path_one = "E:\School\\4th year - 1st sem\Thesis\Model\processed_data_1.csv"
 
 
-def preprocess_data_feature(file_path, target_column='wl-a', save_csv=True):
-    rolling_window = 3
+def preprocess_data_feature(file_path, target_column='wl-c', save_csv=True):
     df = pd.read_csv(file_path)
     df['Datetime'] = pd.to_datetime(df['Datetime'], format='%m/%d/%Y %H:%M')
     df.sort_values('Datetime', inplace=True)
     df.set_index('Datetime', inplace=True)
 
     # Define categorical and numerical columns for specific treatment
-    numerical_cols = ["rf-a", "rf-a-sum", "wl-ch-a"]
+    numerical_cols = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"]
 
     # convert all (*) to nan
     df = df.replace(r'\(\*\)', np.nan, regex=True)
     df = df.apply(pd.to_numeric, errors='coerce')
+
+    # shift by 2 hours since wl-c is affected only after 2 hours
+    df[target_column] = df[target_column].shift(-12)
 
     # Handle missing values globally using linear interpolation, then forward and backward filling
     df.infer_objects(copy=False)
@@ -68,7 +70,7 @@ def preprocess_data_feature(file_path, target_column='wl-a', save_csv=True):
 
 
 def perform_feature_selection(file_path, selection_method, selection_threshold):
-    data_config = preprocess_data_feature(file_path, target_column='wl-a')
+    data_config = preprocess_data_feature(file_path, target_column='wl-c')
     features = data_config['features']
     feature_names = data_config['feature_names']
     print("feature names: ", feature_names, "\n")
@@ -115,7 +117,7 @@ def time_temporal_features_extraction(df):
 
 
 def rolling_features(df, rolling_windows, lags):
-    features = ["rf-a", "rf-a-sum", "wl-ch-a"]
+    features = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"]
 
     for feature in features:
         if feature in df.columns:
@@ -143,8 +145,8 @@ def rolling_features(df, rolling_windows, lags):
 
 
 def main():
-    file_path = "PAGASA/A/A-cummulative.csv"
-    selection_results = perform_feature_selection(file_path, 'importance', 0.2)
+    file_path = "PAGASA/A-C/A-C-cummulative.csv"
+    selection_results = perform_feature_selection(file_path, 'importance', 0.1)
     training_df = selection_results['full_dataframe']
 
     training_df = time_temporal_features_extraction(training_df)
@@ -163,16 +165,16 @@ def main():
 
     # Define new rolling features correctly
     new_features_1hr = [
-        f'{feat}_60min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a"]
+        f'{feat}_60min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", " wl-ch-c"]
         if f'{feat}_60min_avg' in training_df.columns
     ]
 
     new_features_2hr = [
-        f'{feat}_120min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a"]
+        f'{feat}_120min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"]
         if f'{feat}_120min_avg' in training_df.columns
     ]
 
-    lagged_features = [f'{feat}_lag_{lag}' for feat in ["rf-a", "rf-a-sum", "wl-ch-a"] for lag in lags if
+    lagged_features = [f'{feat}_lag_{lag}' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"] for lag in lags if
                        f'{feat}_lag_{lag}' in training_df.columns]
 
     # Extend the original list by the new calculated features along with lagged features
@@ -183,7 +185,7 @@ def main():
     print("Features Selected: ", selected_feature_names)
 
     features = training_df[selected_feature_names].values
-    targets = training_df['wl-a'].values
+    targets = training_df['wl-c'].values
     features = features.astype(np.float32)
 
     features_tensor = torch.FloatTensor(features)
@@ -234,8 +236,8 @@ def main():
     for i in range(10):
         print(f"Actual: {actual_values[i]:.4f}, Predicted: {predictions[i]:.4f}")
 
-    model_path = "E:\\School\\4th year - 1st sem\\Thesis\\Model\\trained_model\\wl_a_model_ver_1.2_0.1_dropout.pth"
-    scaler_path = "E:\\School\\4th year - 1st sem\\Thesis\\Model\\trained_model\\scalers_ver_1.2_0.1_dropout.joblib"
+    model_path = "/trained_model/model_c/1.0/wl_c_model_ver_1.0.pth"
+    scaler_path = "/trained_model/model_c/1.0/scalers_c_ver_1.0.joblib"
 
     torch.save(trainer.model.state_dict(), model_path)
     joblib.dump(selection_results['scaler'], scaler_path)
