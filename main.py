@@ -1,197 +1,199 @@
+import joblib
 import torch
 import pandas as pd
 import numpy as np
-import scipy.sparse
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
 from informer_model import Informer
 from mtcn_model import train_and_predict, TimeSeriesDataset
 
 
-def preprocess_data_feature(file_path, target_column):
+csv_path = "E:\School\\4th year - 1st sem\Thesis\Model\processed_data.csv"
+csv_path_one = "E:\School\\4th year - 1st sem\Thesis\Model\processed_data_1.csv"
+
+
+def preprocess_data_feature(file_path, target_column='wl-a', save_csv=True):
+    rolling_window = 3
     df = pd.read_csv(file_path)
+    df['Datetime'] = pd.to_datetime(df['Datetime'], format='%m/%d/%Y %H:%M')
+    df.sort_values('Datetime', inplace=True)
+    df.set_index('Datetime', inplace=True)
 
-    if df.columns.duplicated().any():
-        raise ValueError(f"Duplicate columns found: {df.columns[df.columns.duplicated()]}")
+    # Define categorical and numerical columns for specific treatment
+    numerical_cols = ["rf-a", "rf-a-sum", "wl-ch-a"]
 
-    df['Date Time'] = pd.to_datetime(df['Date Time'], format='%d.%m.%Y %H:%M:%S')
-    df.dropna(inplace=True)
+    # convert all (*) to nan
+    df = df.replace(r'\(\*\)', np.nan, regex=True)
+    df = df.apply(pd.to_numeric, errors='coerce')
 
-    target_series = df[target_column]
-    feature_data = df.drop(columns=[target_column])
+    # Handle missing values globally using linear interpolation, then forward and backward filling
+    df.infer_objects(copy=False)
+    df.interpolate(method='linear', inplace=True)
+    df.ffill(inplace=True)
+    df.bfill(inplace=True)
 
-    start_date = df['Date Time'].min()
-    df['datetime_feature'] = (df['Date Time'] - start_date).dt.total_seconds() / 3600
-    datetime_feature = df['datetime_feature'].values.reshape(-1, 1)
+    # Perform Min-Max scaling on all numerical columns
+    scaler = MinMaxScaler()
+    df[numerical_cols] = scaler.fit_transform(df[numerical_cols])
 
-    feature_data = feature_data.drop(columns=['Date Time'])
+    all_feature_cols = numerical_cols
 
-    numerical_cols = feature_data.select_dtypes(include=['int64', 'float64']).columns.tolist()
-    categorical_cols = feature_data.select_dtypes(include=['object', 'category']).columns.tolist()
+    # ColumnTransformer setup for potential pipeline integration (optional here)
+    transformers = [
+        ('num', MinMaxScaler(), numerical_cols),
+    ]
+    preprocessor = ColumnTransformer(transformers, remainder='passthrough')
 
-    transformers = [('num', MinMaxScaler(), numerical_cols)]
+    # Extract features and apply transformations if needed
+    remaining_features = df.drop(columns=[target_column], errors='ignore')
+    prepared_features = preprocessor.fit_transform(remaining_features)
+    feature_names = all_feature_cols
 
-    if categorical_cols:
-        transformers.append(('cat', OneHotEncoder(handle_unknown='ignore'), categorical_cols))
+    # Prepare the final structure of the data
+    date_series = pd.Series(df.index, index=df.index)
 
-    preprocessor = ColumnTransformer(transformers)
-
-    transformed_features = preprocessor.fit_transform(feature_data)
-
-    if scipy.sparse.issparse(transformed_features):
-        transformed_features = transformed_features.toarray()
-
-    features_with_datetime = np.hstack((transformed_features, datetime_feature))
-
-    feature_names = numerical_cols
-    if categorical_cols:
-        try:
-            cat_feature_names = preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_cols)
-            feature_names.extend(cat_feature_names)
-        except (KeyError, AttributeError):
-            pass
-    feature_names.append('datetime_feature')
+    # Create the structured dataset
+    final_df = pd.DataFrame(prepared_features, columns=feature_names, index=df.index)
+    final_df[target_column] = df[target_column] if target_column in df.columns else None
 
     return {
-        'features': features_with_datetime,
+        'features': prepared_features,
         'feature_names': feature_names,
-        'date': df['Date Time'],
-        'target': target_series,
-        'scalers': {
-            'numeric': preprocessor.named_transformers_['num'],
-            'categorical': preprocessor.named_transformers_['cat'] if categorical_cols else None
-        }
+        'date': date_series,
+        'target': df[target_column] if target_column in df.columns else None,
+        'scaler': preprocessor
     }
 
 
 def perform_feature_selection(file_path, selection_method, selection_threshold):
-    data_config = preprocess_data_feature(file_path, target_column='T (degC)')
-
+    data_config = preprocess_data_feature(file_path, target_column='wl-a')
     features = data_config['features']
     feature_names = data_config['feature_names']
+    print("feature names: ", feature_names, "\n")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     x = torch.tensor(features, dtype=torch.float32).to(device)
 
-    model = Informer(
-        enc_in=x.shape[1],
-        selection_method=selection_method,
-        selection_threshold=selection_threshold
-    ).to(device)
+    model = Informer(enc_in=x.shape[1], selection_method=selection_method, selection_threshold=selection_threshold).to(device)
 
     with torch.no_grad():
         importance_scores = model.compute_feature_importance(x)
 
-    max_importance = importance_scores.max().item()
-    selected_indices = [i for i, score in enumerate(importance_scores) if score.item() == max_importance]
+    selected_indices = [i for i, score in enumerate(importance_scores) if score.item() >= selection_threshold]
     selected_feature_names = [feature_names[i] for i in selected_indices]
-
-    # TODO: Hard select the features from the testing to build the model
-    # selected_feature_names = ["datetime_feature", "Tdew (degC)", "rh (%)", "sh (g/kg)", "H2OC (mmol/mol)", "rho (g/m**3)"]
-    # selected_indices = [i for i, name in enumerate(feature_names) if name in selected_feature_names]
     selected_feature_data = features[:, selected_indices]
 
-    # Debugging prints
-    print(f"Valid Selected Feature Names: {feature_names}")
-    print(f"Selected Indices: {selected_indices}")
-    print(f"Shape of selected_feature_data: {selected_feature_data.shape}")
+    date_series = pd.Series(data_config['date']).reset_index(drop=True)
+    target_series = pd.Series(data_config['target']).reset_index(drop=True)
+    features_df = pd.DataFrame(selected_feature_data, columns=selected_feature_names).reset_index(drop=True)
 
-    final_df = pd.concat([
-        data_config['date'],
-        pd.DataFrame(selected_feature_data, columns=selected_feature_names),
-        data_config['target']
-    ], axis=1)
+    print("Importance Scores: ", importance_scores)
 
+    final_df = pd.concat([date_series, features_df, target_series], axis=1)
 
+    # Save as csv to check output
+    # final_df.to_csv(csv_path_one)
     return {
         'selected_features': selected_feature_names,
         'full_dataframe': final_df,
         'date': data_config['date'],
-        'target': data_config['target']
+        'target': data_config['target'],
+        'scaler': data_config['scaler']
     }
 
 
-def time_temporal_features_extraction(training_df, features, window_size=7):
-    features['day_of_week'] = training_df['Date Time'].dt.dayofweek
-    features['week'] = training_df['Date Time'].dt.isocalendar().week
-    features['month'] = training_df['Date Time'].dt.month
-    features['season'] = training_df['Date Time'].dt.month % 12 // 3 + 1
-    features['year'] = training_df['Date Time'].dt.year
+def time_temporal_features_extraction(df):
+    # Extracting temporal features directly
+    df['day_of_week'] = df['Datetime'].dt.dayofweek
+    df['week'] = df['Datetime'].dt.isocalendar().week
+    df['month'] = df['Datetime'].dt.month
+    df['year'] = df['Datetime'].dt.year
 
-    # Add rolling lags for features
-    features['temp_7d_rolling_avg'] = training_df['Temperature'].rolling(window=window_size).mean()
-    features['humidity_7d_rolling_avg'] = training_df['Humidity'].rolling(window=window_size).mean()
-
-    features['temp_lag_1'] = training_df['Temperature'].shift(1)
-    features['temp_lag_3'] = training_df['Temperature'].shift(3)
-    features['rain_lag_1'] = training_df['Rainfall'].shift(1)
-
-    return features
+    return df
 
 
-def collate_fn(batch):
-    inputs = [item['inputs'] for item in batch]
-    labels = [item['labels'] for item in batch]
+def rolling_features(df, rolling_windows, lags):
+    features = ["rf-a", "rf-a-sum", "wl-ch-a"]
 
-    max_length = max(label.size(0) for label in labels)
-    labels_padded = [torch.nn.functional.pad(label, (0, max_length - label.size(0))) for label in labels]
+    for feature in features:
+        if feature in df.columns:
+            for stat, window_sizes in rolling_windows.items():
+                for window_size in window_sizes:
+                    if stat == 'mean':
+                        df[f'{feature}_{window_size}0min_avg'] = df[feature].rolling(window=window_size,
+                                                                                    min_periods=1).mean()
+                    elif stat == 'max':
+                        df[f'{feature}_{window_size}0min_max'] = df[feature].rolling(window=window_size,
+                                                                                    min_periods=1).max()
+                    elif stat == 'var':
+                        df[f'{feature}_{window_size}0min_var'] = df[feature].rolling(window=window_size,
+                                                                                    min_periods=1).var()
 
-    inputs_padded = torch.stack(inputs)
-    labels_padded = torch.stack(labels_padded)
+    # Add lagged features
+    for feature in features:
+        if feature in df.columns:
+            for lag in lags:
+                df[f'{feature}_lag_{lag}'] = df[feature].shift(lag)
 
-    return {'inputs': inputs_padded, 'labels': labels_padded}
+    df.bfill(inplace=True)
+
+    return df
 
 
 def main():
-    file_path = "jena_climate_2009_2016.csv/jena_climate_2009_2016.csv"
-
-    # Get selected features and preprocessed data
-    selection_results = perform_feature_selection(file_path, 'importance', 0.5)
-    # selection_results = ["Date Time", "Tdew (degC)", "rh (%)", "sh (g/kg)", "H20C (mmol/mol)", "rho (g/m**3)"]
+    file_path = "PAGASA/A/A-cummulative.csv"
+    selection_results = perform_feature_selection(file_path, 'importance', 0.2)
     training_df = selection_results['full_dataframe']
-    training_df.ffill(inplace=True)
 
-    # Print the selected features
-    print("Selected Features:", selection_results['selected_features'])
+    training_df = time_temporal_features_extraction(training_df)
 
-    # Handle NaT and duplicate timestamps
-    training_df.dropna(subset=['Date Time'], inplace=True)
-    training_df.drop_duplicates(subset=['Date Time'], inplace=True)
+    # 10-minute data interval, adjust as necessary
+    rolling_windows = {
+        'mean': [6, 12],
+        'max': [6, 12],
+        'var': [6, 12]
+    }
+    lags = [12, 24]
+    training_df = rolling_features(training_df, rolling_windows, lags)
 
-    # Extract time-based temporal features
-    training_df = time_temporal_features_extraction(training_df, training_df)
+    # Updated feature names list
+    selected_feature_names = selection_results['selected_features'] + ['day_of_week', 'week', 'month', 'year']
 
-    # Update selected features list to include temporal features
-    selected_feature_names = selection_results['selected_features'] + ['day_of_week', 'week', 'month']
+    # Define new rolling features correctly
+    new_features_1hr = [
+        f'{feat}_60min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a"]
+        if f'{feat}_60min_avg' in training_df.columns
+    ]
 
-    # Prepare features and target
-    features = training_df[selected_feature_names].values  # Now includes temporal features
-    targets = training_df['T (degC)'].values
+    new_features_2hr = [
+        f'{feat}_120min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a"]
+        if f'{feat}_120min_avg' in training_df.columns
+    ]
 
-    # Ensure all features are numerical
+    lagged_features = [f'{feat}_lag_{lag}' for feat in ["rf-a", "rf-a-sum", "wl-ch-a"] for lag in lags if
+                       f'{feat}_lag_{lag}' in training_df.columns]
+
+    # Extend the original list by the new calculated features along with lagged features
+    selected_feature_names.extend(new_features_1hr + new_features_2hr + lagged_features)
+
+    training_df.drop(columns=['Datetime'], inplace=True)
+
+    print("Features Selected: ", selected_feature_names)
+
+    features = training_df[selected_feature_names].values
+    targets = training_df['wl-a'].values
     features = features.astype(np.float32)
 
-    # Convert to PyTorch tensors
     features_tensor = torch.FloatTensor(features)
     targets_tensor = torch.FloatTensor(targets)
 
-    # Training parameters
-    sequence_length = 30
+    sequence_length = 6
     num_epochs = 50
-    batch_size = 250
+    batch_size = 24
+    trainer, history = train_and_predict(features=features_tensor, targets=targets_tensor, sequence_length=sequence_length, num_epochs=num_epochs, batch_size=batch_size)
 
-    # Train and predict using modified TCN model
-    trainer, history = train_and_predict(
-        features=features_tensor,
-        targets=targets_tensor,
-        sequence_length=sequence_length,
-        num_epochs=num_epochs,
-        batch_size=batch_size
-    )
-
-    # Plot training history
     plt.figure(figsize=(12, 6))
     plt.plot(history['train_loss'], label='Train Loss')
     plt.plot(history['val_loss'], label='Validation Loss')
@@ -201,35 +203,29 @@ def main():
     plt.legend()
     plt.show()
 
-    # Make predictions
     model = trainer.model
     model.eval()
     predictions = []
     actual_values = []
-
-    # TODO: add code here for saving the model as pkl file or joblib
-
-    # Create dataset for testing
     test_dataset = TimeSeriesDataset(features, targets, sequence_length)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
     with torch.no_grad():
         for batch_x, batch_y in test_loader:
             batch_x = batch_x.to(trainer.device)
             outputs = model(batch_x)
-            predictions.append(outputs.cpu().numpy().flatten())
-            actual_values.append(batch_y.numpy().flatten())
+            predictions.extend(outputs.cpu().numpy().flatten())
+            actual_values.extend(batch_y.numpy().flatten())
 
-    predictions = np.concatenate(predictions)
-    actual_values = np.concatenate(actual_values)
+    predictions = np.array(predictions)
+    actual_values = np.array(actual_values)
 
     # Plot predictions vs actual values
     plt.figure(figsize=(12, 6))
     plt.plot(actual_values, label='Actual')
     plt.plot(predictions, label='Predicted', linestyle='--')
-    plt.title('Actual vs Predicted T (degC)')
+    plt.title('Actual vs Predicted wl-a Levels')
     plt.xlabel('Time Steps')
-    plt.ylabel('T (degC)')
+    plt.ylabel('wl-a Level')
     plt.legend()
     plt.show()
 
@@ -238,9 +234,14 @@ def main():
     for i in range(10):
         print(f"Actual: {actual_values[i]:.4f}, Predicted: {predictions[i]:.4f}")
 
+    model_path = "E:\\School\\4th year - 1st sem\\Thesis\\Model\\trained_model\\wl_a_model_ver_1.2_0.1_dropout.pth"
+    scaler_path = "E:\\School\\4th year - 1st sem\\Thesis\\Model\\trained_model\\scalers_ver_1.2_0.1_dropout.joblib"
+
+    torch.save(trainer.model.state_dict(), model_path)
+    joblib.dump(selection_results['scaler'], scaler_path)
+
+    print("Model and scaler saved successfully!")
+
 
 if __name__ == "__main__":
     main()
-
-
-# TODO: Add a code for deployment to streamlit, you can have it in another file

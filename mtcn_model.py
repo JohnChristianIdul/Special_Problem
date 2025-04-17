@@ -43,7 +43,7 @@ class TCNSingleBlock(nn.Module):
 
 
 class TemporalConvNet(nn.Module):
-    def __init__(self, input_dim, num_channels, kernel_size=3, dropout=0.2):
+    def __init__(self, input_dim, num_channels, kernel_size=3, dropout=0.5):
         super(TemporalConvNet, self).__init__()
         self.layers = nn.ModuleList()
         self.num_channels = num_channels
@@ -68,7 +68,7 @@ class TemporalConvNet(nn.Module):
 
 
 class TCNForecaster(nn.Module):
-    def __init__(self, input_size, output_size, num_channels, kernel_size=3, dropout=0.2):
+    def __init__(self, input_size, output_size, num_channels, kernel_size, dropout):
         super(TCNForecaster, self).__init__()
         self.tcn = TemporalConvNet(input_size, num_channels, kernel_size, dropout)
         self.linear = nn.Linear(num_channels[-1], output_size)
@@ -83,11 +83,12 @@ class TCNForecaster(nn.Module):
         tcn_out = self.tcn(x)
         tcn_out = tcn_out[:, :, -1]
         output = self.linear(tcn_out)
+
         return output
 
 
 def create_forecaster(input_size, output_size, num_channels):
-    return TCNForecaster(input_size, output_size, num_channels, kernel_size=3, dropout=0.2)
+    return TCNForecaster(input_size, output_size, num_channels, kernel_size=3, dropout=0.5)
 
 
 class TimeSeriesDataset(Dataset):
@@ -118,8 +119,11 @@ class TCNTrainer:
         """Single training step for one batch"""
         self.model.train()
         try:
-            outputs = self.model(batch_x)  # Shape: [batch_size, sequence_length, output_dim]
-            outputs = outputs.squeeze(-1)  # Adjust if output_dim=1
+            # Outputs and batch_y would now be [batch_size, sequence_length, features]
+            outputs = self.model(batch_x)
+            outputs = outputs.view(-1)
+            batch_y = batch_y.view(-1)
+
             loss = self.criterion(outputs, batch_y)
             self.optimizer.zero_grad()
             loss.backward()
@@ -151,15 +155,19 @@ class TCNTrainer:
                     batch_x = batch_x.to(self.device)
                     batch_y = batch_y.to(self.device)
 
+                # Check dimensions
+                assert batch_x.size(0) == batch_y.size(
+                    0), f"Mismatch in batch sizes - Inputs: {batch_x.size(0)}, Targets: {batch_y.size(0)}"
+
                 loss = self.train_step(batch_x, batch_y)
                 total_loss += loss
             except Exception as e:
                 print(f"Error during training: {e}")
                 print(f"Batch type: {type(batch)}")
                 if isinstance(batch, dict):
-                    print(f"Input shape: {batch['inputs'].shape}")
+                    print(f"Input shape: {batch['inputs'].shape}, Target shape: {batch['labels'].shape}")
                 else:
-                    print(f"Input shape: {batch_x.shape}")
+                    print(f"Input shape: {batch.shape}")
         return total_loss / len(train_loader)
 
     def validate(self, val_loader):
@@ -186,7 +194,6 @@ class TCNTrainer:
         mse = mean_squared_error(all_targets, all_preds)
         rmse = np.sqrt(mse)
 
-        # TO avoid Dividing by zero error
         all_targets = np.array(all_targets)
         all_preds = np.array(all_preds)
         nonzero_mask = all_targets != 0
@@ -197,8 +204,7 @@ class TCNTrainer:
         print(f"Validation - MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, MAPE: {mape:.2f}%")
         return avg_loss, mse, rmse, mae, mape
 
-
-def predict(self, x):
+    def predict(self, x):
         self.model.eval()
         with torch.no_grad():
             x = torch.FloatTensor(x).unsqueeze(0).to(self.device)
@@ -217,13 +223,12 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
 
     input_size = features.shape[1]
     output_size = 1
-    num_channels = [16, 32, 64]
-
-    print(f"Input size: {input_size}")
+    # num_channels = [16, 32, 64]
+    num_channels = [64, 128, 256]
 
     model = create_forecaster(input_size, output_size, num_channels)
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adamax(model.parameters(), lr=0.001)
     trainer = TCNTrainer(model, criterion, optimizer)
 
     history = {'train_loss': [], 'val_loss': []}
