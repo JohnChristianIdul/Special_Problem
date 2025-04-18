@@ -3,8 +3,9 @@ import torch
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from informer_model import Informer
 from mtcn_model import train_and_predict, TimeSeriesDataset
@@ -21,14 +22,22 @@ def preprocess_data_feature(file_path, target_column='wl-c', save_csv=True):
     df.set_index('Datetime', inplace=True)
 
     # Define categorical and numerical columns for specific treatment
-    numerical_cols = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"]
+    numerical_cols = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum"]
+    down_one = ["rf-c", "rf-c-sum"]
+    up_one = ["wl-ch-a", "wl-a"]
+    df.drop("wl-ch-c", axis=1, inplace=True)
 
     # convert all (*) to nan
     df = df.replace(r'\(\*\)', np.nan, regex=True)
     df = df.apply(pd.to_numeric, errors='coerce')
 
     # shift by 2 hours since wl-c is affected only after 2 hours
+    df[target_column] = df[target_column].shift(-1)
     df[target_column] = df[target_column].shift(-12)
+    df[up_one] = df[up_one].shift(-1)
+
+    # shift data by 10 min after shifting by 2 hours to align values
+    df[down_one] = df[down_one].shift(1)
 
     # Handle missing values globally using linear interpolation, then forward and backward filling
     df.infer_objects(copy=False)
@@ -117,7 +126,7 @@ def time_temporal_features_extraction(df):
 
 
 def rolling_features(df, rolling_windows, lags):
-    features = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"]
+    features = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum"]
 
     for feature in features:
         if feature in df.columns:
@@ -165,16 +174,16 @@ def main():
 
     # Define new rolling features correctly
     new_features_1hr = [
-        f'{feat}_60min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", " wl-ch-c"]
+        f'{feat}_60min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum"]
         if f'{feat}_60min_avg' in training_df.columns
     ]
 
     new_features_2hr = [
-        f'{feat}_120min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"]
+        f'{feat}_120min_avg' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum"]
         if f'{feat}_120min_avg' in training_df.columns
     ]
 
-    lagged_features = [f'{feat}_lag_{lag}' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum", "wl-ch-c"] for lag in lags if
+    lagged_features = [f'{feat}_lag_{lag}' for feat in ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum"] for lag in lags if
                        f'{feat}_lag_{lag}' in training_df.columns]
 
     # Extend the original list by the new calculated features along with lagged features
@@ -225,9 +234,9 @@ def main():
     plt.figure(figsize=(12, 6))
     plt.plot(actual_values, label='Actual')
     plt.plot(predictions, label='Predicted', linestyle='--')
-    plt.title('Actual vs Predicted wl-a Levels')
+    plt.title('Actual vs Predicted wl-c Levels')
     plt.xlabel('Time Steps')
-    plt.ylabel('wl-a Level')
+    plt.ylabel('wl-c Level')
     plt.legend()
     plt.show()
 
@@ -236,8 +245,8 @@ def main():
     for i in range(10):
         print(f"Actual: {actual_values[i]:.4f}, Predicted: {predictions[i]:.4f}")
 
-    model_path = "/trained_model/model_c/1.0/wl_c_model_ver_1.0.pth"
-    scaler_path = "/trained_model/model_c/1.0/scalers_c_ver_1.0.joblib"
+    model_path = "trained_model/model_c/1.1/wl_c_model_ver_1.1_6_baseinput.pth"
+    scaler_path = "trained_model/model_c/1.1/scalers_c_ver_1.1_6_baseinput.joblib"
 
     torch.save(trainer.model.state_dict(), model_path)
     joblib.dump(selection_results['scaler'], scaler_path)

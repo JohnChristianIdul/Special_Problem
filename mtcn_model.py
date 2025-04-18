@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset, random_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import KFold
+import numpy as np
 
 
 class TCNSingleBlock(nn.Module):
@@ -229,7 +230,53 @@ class TCNTrainer:
         return predictions
 
 
-def train_and_predict(features, targets, sequence_length, num_epochs, batch_size):
+def train_and_predict(features, targets, sequence_length, num_epochs, batch_size, n_splits=5):
+    # dataset = TimeSeriesDataset(features, targets, sequence_length)
+    #
+    # kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    #
+    # overall_val_metrics = []
+    #
+    # for fold, (train_idx, val_idx) in enumerate(kf.split(range(len(dataset)))):
+    #     print(f"Training on fold {fold + 1}/{n_splits}...")
+    #
+    #     train_subsampler = Subset(dataset, indices=train_idx)
+    #     val_subsampler = Subset(dataset, indices=val_idx)
+    #
+    #     train_loader = DataLoader(train_subsampler, batch_size=batch_size, shuffle=True)
+    #     val_loader = DataLoader(val_subsampler, batch_size=batch_size)
+    #
+    #     input_size = features.shape[1]  # Assuming features is a 2D array [num_samples, num_features]
+    #     output_size = 1  # Predicting a single value
+    #     num_channels = [128, 256, 512]  # Depth of each TCN layer
+    #
+    #     model = create_forecaster(input_size, output_size, num_channels)
+    #     criterion = nn.MSELoss()
+    #     optimizer = torch.optim.Adamax(model.parameters(), lr=0.001)
+    #     trainer = TCNTrainer(model, criterion, optimizer)
+    #
+    #     history = {'train_loss': [], 'val_loss': []}
+    #
+    #     for epoch in range(num_epochs):
+    #         train_loss = trainer.train_epoch(train_loader)
+    #         val_metrics = trainer.validate(val_loader)
+    #         history['train_loss'].append(train_loss)
+    #         history['val_loss'].append(val_metrics[0])
+    #
+    #         if (epoch + 1) % 10 == 0 or epoch == num_epochs - 1:
+    #             print(f'Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, '
+    #                   f'Val Loss: {val_metrics[0]:.4f}, MSE: {val_metrics[1]:.4f}, '
+    #                   f'RMSE: {val_metrics[2]:.4f}, MAE: {val_metrics[3]:.4f}, '
+    #                   f'MAPE: {val_metrics[4]:.2f}%')
+    #
+    #     overall_val_metrics.append(val_metrics)
+    #
+    # averaged_metrics = np.mean(overall_val_metrics, axis=0)
+    # print(
+    #     f"Averaged Validation Metrics Across folds - MSE: {averaged_metrics[1]:.4f}, RMSE: {averaged_metrics[2]:.4f}, "
+    #     f"MAE: {averaged_metrics[3]:.4f}, MAPE: {averaged_metrics[4]:.2f}%")
+    # return trainer, history, averaged_metrics
+
     dataset = TimeSeriesDataset(features, targets, sequence_length)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
@@ -241,7 +288,6 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
     input_size = features.shape[1]   # Number of features
     output_size = 1  # Predicting a single value
     num_channels = [128, 256, 512]  # Depth of each TCN layer
-    # num_channels = [64, 128, 256]  # Depth of each TCN layer
 
     model = create_forecaster(input_size, output_size, num_channels)
     criterion = nn.MSELoss()
