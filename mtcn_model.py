@@ -287,7 +287,8 @@ def train_and_predict(features, targets, sequence_length, num_epochs, batch_size
 
     input_size = features.shape[1]   # Number of features
     output_size = 1  # Predicting a single value
-    num_channels = [128, 256, 512]  # Depth of each TCN layer
+    # num_channels = [128, 256, 512]  # Depth of each TCN layer
+    num_channels = [62, 128, 256]  # Depth of each TCN layer
 
     model = create_forecaster(input_size, output_size, num_channels)
     criterion = nn.MSELoss()

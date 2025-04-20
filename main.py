@@ -23,7 +23,7 @@ def preprocess_data_feature(file_path, target_column='wl-c', save_csv=True):
 
     # Define categorical and numerical columns for specific treatment
     numerical_cols = ["rf-a", "rf-a-sum", "wl-ch-a", "wl-a", "rf-c", "rf-c-sum"]
-    down_one = ["rf-c", "rf-c-sum"]
+    shift_12 = ['wl-c', 'rf-c', 'rf-c-sum']
     up_one = ["wl-ch-a", "wl-a"]
     df.drop("wl-ch-c", axis=1, inplace=True)
 
@@ -32,12 +32,9 @@ def preprocess_data_feature(file_path, target_column='wl-c', save_csv=True):
     df = df.apply(pd.to_numeric, errors='coerce')
 
     # shift by 2 hours since wl-c is affected only after 2 hours
-    df[target_column] = df[target_column].shift(-1)
-    df[target_column] = df[target_column].shift(-12)
-    df[up_one] = df[up_one].shift(-1)
-
-    # shift data by 10 min after shifting by 2 hours to align values
-    df[down_one] = df[down_one].shift(1)
+    df[target_column] = df[target_column].shift(-1) # target shift up by 10 min
+    df[shift_12] = df[shift_12].shift(-12)  # shift c values up by 2 hours
+    df[up_one] = df[up_one].shift(-1)  # shift a values by 10mins up
 
     # Handle missing values globally using linear interpolation, then forward and backward filling
     df.infer_objects(copy=False)
@@ -134,13 +131,7 @@ def rolling_features(df, rolling_windows, lags):
                 for window_size in window_sizes:
                     if stat == 'mean':
                         df[f'{feature}_{window_size}0min_avg'] = df[feature].rolling(window=window_size,
-                                                                                    min_periods=1).mean()
-                    elif stat == 'max':
-                        df[f'{feature}_{window_size}0min_max'] = df[feature].rolling(window=window_size,
-                                                                                    min_periods=1).max()
-                    elif stat == 'var':
-                        df[f'{feature}_{window_size}0min_var'] = df[feature].rolling(window=window_size,
-                                                                                    min_periods=1).var()
+                                                                                     min_periods=1).mean()
 
     # Add lagged features
     for feature in features:
@@ -245,8 +236,8 @@ def main():
     for i in range(10):
         print(f"Actual: {actual_values[i]:.4f}, Predicted: {predictions[i]:.4f}")
 
-    model_path = "trained_model/model_c/1.1/wl_c_model_ver_1.1_6_baseinput.pth"
-    scaler_path = "trained_model/model_c/1.1/scalers_c_ver_1.1_6_baseinput.joblib"
+    model_path = "trained_model/model_c/1.2/wl_c_model_ver_1.2_6_baseinput.pth"
+    scaler_path = "trained_model/model_c/1.2/scalers_c_ver_1.2_6_baseinput.joblib"
 
     torch.save(trainer.model.state_dict(), model_path)
     joblib.dump(selection_results['scaler'], scaler_path)
